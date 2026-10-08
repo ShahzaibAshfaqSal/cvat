@@ -42,6 +42,8 @@ These are not part of my main plan. If I am ahead of time once everything else a
 
 Filled in as I go: what changed, when, and why.
 
+* Step 2: the task access check moved here from step 3. CVAT refuses to run any API view that has no `iam_permission_class`, so the endpoint needed one from the start, and I did not want a commit where any logged-in user could read any task's counts. Step 3 is now about proving it: a second user, Django tests, and the 401 and 403 curl outputs.
+
 ## Decision record
 
 Filled in at the end (item 10).
