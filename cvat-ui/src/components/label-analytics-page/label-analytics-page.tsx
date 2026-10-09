@@ -8,21 +8,19 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router';
 import { Row, Col } from 'antd/lib/grid';
 import Alert from 'antd/lib/alert';
+import Button from 'antd/lib/button';
 import Card from 'antd/lib/card';
-import Table from 'antd/lib/table';
+import Empty from 'antd/lib/empty';
+import Statistic from 'antd/lib/statistic';
 import Text from 'antd/lib/typography/Text';
 import Title from 'antd/lib/typography/Title';
 
-import { getCore } from 'cvat-core-wrapper';
+import { getCore, ServerError, Task } from 'cvat-core-wrapper';
 import GoBackButton from 'components/common/go-back-button';
 import CVATLoadingSpinner from 'components/common/loading-spinner';
+import LabelCountsChart, { LabelAnnotationCount } from './label-counts-chart';
 
 const core = getCore();
-
-interface LabelAnnotationCount {
-    label: string;
-    count: number;
-}
 
 interface LabelAnalytics {
     task_id: number;
@@ -30,53 +28,104 @@ interface LabelAnalytics {
     results: LabelAnnotationCount[];
 }
 
+interface PageData {
+    task: Task;
+    analytics: LabelAnalytics;
+}
+
+function describeError(error: unknown): string {
+    if (error instanceof ServerError) {
+        switch (error.code) {
+            case 401:
+                return 'Your session has expired. Please log in again.';
+            case 403:
+                return 'You do not have access to this task.';
+            case 404:
+                return 'This task does not exist.';
+            default:
+                return error.message;
+        }
+    }
+
+    return error instanceof Error ? error.message : 'Unknown error';
+}
+
 function LabelAnalyticsPage(): JSX.Element {
     const { tid } = useParams<{ tid: string }>();
     const taskId = +tid;
-    const [analytics, setAnalytics] = useState<LabelAnalytics | null>(null);
+    const [data, setData] = useState<PageData | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
-        setAnalytics(null);
+        setData(null);
         setError(null);
 
-        core.server.request<{ data: LabelAnalytics }>(`${core.config.backendAPI}/analytics/labels`, {
-            method: 'GET',
-            params: { task_id: taskId },
-        }).then((response) => {
-            if (!cancelled) {
-                setAnalytics(response.data);
+        Promise.all([
+            core.tasks.get({ id: taskId }),
+            core.server.request<{ data: LabelAnalytics }>(`${core.config.backendAPI}/analytics/labels`, {
+                method: 'GET',
+                params: { task_id: taskId },
+            }),
+        ]).then(([[task], response]) => {
+            if (cancelled) {
+                return;
+            }
+
+            if (task) {
+                setData({ task, analytics: response.data });
+            } else {
+                setError('This task does not exist.');
             }
         }).catch((_error: unknown) => {
             if (!cancelled) {
-                setError(_error instanceof Error ? _error.message : 'Unknown error');
+                setError(describeError(_error));
             }
         });
 
         return () => {
             cancelled = true;
         };
-    }, [taskId]);
+    }, [taskId, attempt]);
 
     let content: JSX.Element;
     if (error) {
-        content = <Alert type='error' showIcon message='Could not load annotation counts' description={error} />;
-    } else if (!analytics) {
-        content = <CVATLoadingSpinner size='large' />;
-    } else {
         content = (
-            <Table
-                className='cvat-label-analytics-table'
-                size='small'
-                rowKey='label'
-                pagination={false}
-                dataSource={analytics.results}
-                columns={[
-                    { title: 'Label', dataIndex: 'label' },
-                    { title: 'Annotations', dataIndex: 'count', align: 'right' },
-                ]}
+            <Alert
+                className='cvat-label-analytics-error'
+                type='error'
+                showIcon
+                message='Could not load annotation counts'
+                description={error}
+                action={<Button onClick={() => setAttempt(attempt + 1)}>Retry</Button>}
             />
+        );
+    } else if (!data) {
+        content = <CVATLoadingSpinner size='large' />;
+    } else if (data.analytics.total === 0) {
+        content = <Empty className='cvat-label-analytics-empty' description='No annotations found for this task' />;
+    } else {
+        const { task, analytics } = data;
+        const labelColors = Object.fromEntries(
+            task.labels.filter((label) => label.color).map((label) => [label.name, label.color as string]),
+        );
+
+        content = (
+            <>
+                <Row gutter={16} className='cvat-label-analytics-summary'>
+                    <Col span={8}>
+                        <Statistic title='Total annotations' value={analytics.total} />
+                    </Col>
+                    <Col span={8}>
+                        <Statistic title='Classes with annotations' value={analytics.results.length} />
+                    </Col>
+                    <Col span={8}>
+                        <Statistic title='Most frequent class' value={analytics.results[0].label} />
+                    </Col>
+                </Row>
+                <LabelCountsChart counts={analytics.results} labelColors={labelColors} />
+            </>
         );
     }
 
@@ -91,7 +140,9 @@ function LabelAnalyticsPage(): JSX.Element {
                 <Col span={22} xl={18} xxl={14}>
                     <Card>
                         <Title level={4}>Annotations per class</Title>
-                        <Text type='secondary'>{`Task #${taskId}`}</Text>
+                        <Text type='secondary'>
+                            {data ? `Task #${taskId}: ${data.task.name}` : `Task #${taskId}`}
+                        </Text>
                         <div className='cvat-label-analytics-content'>{content}</div>
                     </Card>
                 </Col>

@@ -13,3 +13,12 @@
 .cvat-label-analytics-content {
     margin-top: $grid-unit-size * 3;
 }
+
+.cvat-label-analytics-summary {
+    margin-bottom: $grid-unit-size * 3;
+}
+
+.cvat-label-analytics-chart {
+    position: relative;
+    width: 100%;
+}
