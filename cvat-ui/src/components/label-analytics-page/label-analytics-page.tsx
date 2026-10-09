@@ -4,7 +4,7 @@
 
 import './styles.scss';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router';
 import { Row, Col } from 'antd/lib/grid';
 import Alert from 'antd/lib/alert';
@@ -13,13 +13,16 @@ import Card from 'antd/lib/card';
 import Empty from 'antd/lib/empty';
 import Radio from 'antd/lib/radio';
 import Statistic from 'antd/lib/statistic';
+import Tag from 'antd/lib/tag';
 import Text from 'antd/lib/typography/Text';
 import Title from 'antd/lib/typography/Title';
 
 import { getCore, ServerError, Task } from 'cvat-core-wrapper';
 import GoBackButton from 'components/common/go-back-button';
 import CVATLoadingSpinner from 'components/common/loading-spinner';
+import { useIsMounted } from 'utils/hooks';
 import LabelCountsChart, { LabelAnnotationCount } from './label-counts-chart';
+import { SocketStatus, useLabelCountsSocket } from './use-label-counts-socket';
 
 const core = getCore();
 
@@ -51,6 +54,29 @@ function describeError(error: unknown): string {
     return error instanceof Error ? error.message : 'Unknown error';
 }
 
+async function fetchPageData(taskId: number): Promise<PageData> {
+    const [[task], response] = await Promise.all([
+        core.tasks.get({ id: taskId }),
+        core.server.request<{ data: LabelAnalytics }>(`${core.config.backendAPI}/analytics/labels`, {
+            method: 'GET',
+            params: { task_id: taskId },
+        }),
+    ]);
+
+    if (!task) {
+        throw new Error('This task does not exist.');
+    }
+
+    return { task, analytics: response.data };
+}
+
+const SOCKET_STATUS_TAGS: Record<SocketStatus, { color: string, text: string }> = {
+    connecting: { color: 'default', text: 'Connecting...' },
+    live: { color: 'green', text: 'Live' },
+    reconnecting: { color: 'orange', text: 'Reconnecting...' },
+    off: { color: 'default', text: 'Live updates off' },
+};
+
 function LabelAnalyticsPage(): JSX.Element {
     const { tid } = useParams<{ tid: string }>();
     const taskId = +tid;
@@ -59,26 +85,16 @@ function LabelAnalyticsPage(): JSX.Element {
     const [attempt, setAttempt] = useState(0);
     const [groupByType, setGroupByType] = useState(false);
 
+    const isMounted = useIsMounted();
+
     useEffect(() => {
         let cancelled = false;
         setData(null);
         setError(null);
 
-        Promise.all([
-            core.tasks.get({ id: taskId }),
-            core.server.request<{ data: LabelAnalytics }>(`${core.config.backendAPI}/analytics/labels`, {
-                method: 'GET',
-                params: { task_id: taskId },
-            }),
-        ]).then(([[task], response]) => {
-            if (cancelled) {
-                return;
-            }
-
-            if (task) {
-                setData({ task, analytics: response.data });
-            } else {
-                setError('This task does not exist.');
+        fetchPageData(taskId).then((pageData) => {
+            if (!cancelled) {
+                setData(pageData);
             }
         }).catch((_error: unknown) => {
             if (!cancelled) {
@@ -90,6 +106,22 @@ function LabelAnalyticsPage(): JSX.Element {
             cancelled = true;
         };
     }, [taskId, attempt]);
+
+    // live updates replace the numbers in place, without the loading spinner
+    const refreshCounts = useCallback(() => {
+        fetchPageData(taskId).then((pageData) => {
+            if (isMounted()) {
+                setData(pageData);
+                setError(null);
+            }
+        }).catch((_error: unknown) => {
+            if (isMounted()) {
+                setError(describeError(_error));
+            }
+        });
+    }, [taskId]);
+
+    const socketStatus = useLabelCountsSocket(taskId, refreshCounts);
 
     let content: JSX.Element;
     if (error) {
@@ -155,7 +187,15 @@ function LabelAnalyticsPage(): JSX.Element {
             <Row justify='center'>
                 <Col span={22} xl={18} xxl={14}>
                     <Card>
-                        <Title level={4}>Annotations per class</Title>
+                        <Title level={4}>
+                            Annotations per class
+                            <Tag
+                                className='cvat-label-analytics-socket-status'
+                                color={SOCKET_STATUS_TAGS[socketStatus].color}
+                            >
+                                {SOCKET_STATUS_TAGS[socketStatus].text}
+                            </Tag>
+                        </Title>
                         <Text type='secondary'>
                             {data ? `Task #${taskId}: ${data.task.name}` : `Task #${taskId}`}
                         </Text>

@@ -2,6 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 
+import json
+
+from asgiref.sync import async_to_sync
+from asgiref.testing import ApplicationCommunicator
+from django.conf import settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -19,11 +24,12 @@ from cvat.apps.engine.models import (
 )
 from cvat.apps.engine.tests.utils import ForceLogin
 from cvat.apps.iam.models import User
+from cvat.apps.test import websocket
 
 URL = "/api/analytics/labels"
 
 
-class LabelAnalyticsAPITestCase(APITestCase):
+class LabelAnalyticsTestBase(APITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.owner = User.objects.create_user(username="owner", password="owner")
@@ -57,6 +63,8 @@ class LabelAnalyticsAPITestCase(APITestCase):
         )
         LabeledImage.objects.create(job=job, label=person, frame=3)
 
+
+class LabelAnalyticsAPITestCase(LabelAnalyticsTestBase):
     def _get(self, user, params):
         if user is None:
             return self.client.get(URL, params)
@@ -118,3 +126,48 @@ class LabelAnalyticsAPITestCase(APITestCase):
                 response = self._get(self.owner, params)
 
                 self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class LabelCountsWebSocketTestCase(LabelAnalyticsTestBase):
+    def _connect(self, user, task_id):
+        headers = [(b"host", b"testserver"), (b"origin", b"http://testserver")]
+        if user is not None:
+            self.client.force_login(user)
+            session_id = self.client.cookies[settings.SESSION_COOKIE_NAME].value
+            headers.append((b"cookie", f"{settings.SESSION_COOKIE_NAME}={session_id}".encode()))
+
+        scope = {
+            "type": "websocket",
+            "path": websocket.PATH,
+            "query_string": f"task_id={task_id}".encode(),
+            "headers": headers,
+        }
+
+        async def first_messages():
+            communicator = ApplicationCommunicator(websocket.label_counts_socket, scope)
+            await communicator.send_input({"type": "websocket.connect"})
+            accepted = await communicator.receive_output(timeout=10)
+            reply = await communicator.receive_output(timeout=10)
+            await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+            await communicator.wait(timeout=10)
+            return accepted, reply
+
+        return async_to_sync(first_messages)()
+
+    def test_socket_without_login_is_closed(self):
+        _, reply = self._connect(None, self.task.id)
+
+        self.assertEqual(
+            reply, {"type": "websocket.close", "code": websocket.CLOSE_NOT_AUTHENTICATED}
+        )
+
+    def test_socket_without_access_is_closed(self):
+        _, reply = self._connect(self.stranger, self.task.id)
+
+        self.assertEqual(reply, {"type": "websocket.close", "code": websocket.CLOSE_FORBIDDEN})
+
+    def test_socket_for_task_owner_is_ready(self):
+        accepted, reply = self._connect(self.owner, self.task.id)
+
+        self.assertEqual(accepted, {"type": "websocket.accept"})
+        self.assertEqual(json.loads(reply["text"]), {"type": "ready", "task_id": self.task.id})

@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/3.2/howto/deployment/asgi/
 
 import os
 
+from django.apps import apps
 from django.core.asgi import get_asgi_application
 from django.core.handlers.asgi import ASGIHandler
 
@@ -39,3 +40,16 @@ if debug.is_debugging_enabled():
             return await super().handle(*args, **kwargs)
 
     application = DebuggerApp()
+
+
+if apps.is_installed("cvat.apps.test"):
+    from cvat.apps.test import websocket as label_counts_websocket
+
+    http_application = application
+
+    async def application(scope, receive, send):
+        # Django's ASGI handler only serves HTTP, so the analytics socket is routed here
+        if scope["type"] == "websocket" and scope["path"] == label_counts_websocket.PATH:
+            return await label_counts_websocket.label_counts_socket(scope, receive, send)
+
+        return await http_application(scope, receive, send)
