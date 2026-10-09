@@ -43,11 +43,31 @@ These are not part of my main plan. If I am ahead of time once everything else a
 Filled in as I go: what changed, when, and why.
 
 * Step 2: the task access check moved here from step 3. CVAT refuses to run any API view that has no `iam_permission_class`, so the endpoint needed one from the start, and I did not want a commit where any logged-in user could read any task's counts. Step 3 is now about proving it: a second user, Django tests, and the 401 and 403 curl outputs.
+* Step 7: the plan only talked about grouping in the API. I also added a Total / By annotation type switch on the page, because the grouping is hard to see in raw JSON. The query change cost about 5 ms on MO-1 (72.5 ms before, 77.7 ms after), still under the target. Both measurements are in Objectives.
+* Steps 8 and 9 (WebSocket and reconnect): I had listed these as skipped unless I was ahead of time. Step 7 was committed at 08:23, about 4.4 hours in, which was inside my 5.5 hour limit, so I tried them. I expected to need Django Channels, but looking at the server showed I did not: uvicorn already has the `websockets` library and CVAT's nginx already forwards WebSocket upgrades. So the change ended up much smaller than I planned for. How I built it, and what I gave up, is in the decision record below.
+
+## What actually happened
+
+I started at 04:00 (my time, UTC+5). Git shows commit times in UTC, so 23:18 UTC on 8 October is 04:18 here.
+
+| Step | Planned (hours in) | Committed at (my time) | Hours in |
+|---|---|---|---|
+| 1. Plan, objectives, definition of done | 0-0.5 | 04:18 | 0.3 |
+| 2. Endpoint | 0.5-1.5 | 04:54 | 0.9 |
+| 3. Access tests | 1.5-2.25 | 05:55 | 1.9 |
+| 4. Page and menu entry | 2.25-3 | 06:42 | 2.7 |
+| 5. Chart, empty and error states | 3-3.75 | 07:43 | 3.7 |
+| 6. MO-1 measurement | 3.75-4.5 | 07:53 | 3.9 |
+| 7. Grouping by shape type | 4.5-5.5 | 08:23 | 4.4 |
+| 8. WebSocket and reconnect | 5.5-7 | 09:35 | 5.6 |
+| 9. Docs, evidence | 7-7.5 | this commit | about 6 |
+
+Every step up to 7 finished at or ahead of its planned time, which is why I had room for steps 8 and 9. Setting up the stack and importing the 5000 images happened before 04:00 and is not counted, as Task.pdf allows.
 
 ## Decision record
 
-Filled in at the end (item 10).
+Item 10, about the live updates (items 8 and 9), because that is where I had a real choice to make.
 
-* Approach taken:
-* Approach rejected:
-* What rejecting it cost:
+* **Approach taken:** a plain WebSocket at `/api/analytics/labels/ws`, handled in `cvat/apps/test/websocket.py` and routed in `cvat/asgi.py`. When it opens, it checks the login session, the same `TaskPermission` view rule as the HTTP endpoint, and the `Origin` header. Then every 2 seconds it reads the task's `updated_date`, which CVAT updates after every annotation create, update or delete (`_set_updated_date` in `dataset_manager/task.py`). When the date changes, it sends `annotations_changed` and the page reloads the counts through the normal endpoint. The socket never sends counts itself, so counting and permission checks stay in one place.
+* **Approach rejected:** Django Channels, with a signal fired from CVAT's annotation save code and pushed to every open socket through a Redis channel layer. That would be instant, and it is the textbook way to do it.
+* **What rejecting it cost:** updates arrive up to 2 seconds late instead of straight away, and every open analytics page costs one small query by primary key every 2 seconds, even when nothing changes. In return I added no new dependency, did not touch CVAT's annotation save path (which runs in several processes and containers, so a signal would have needed Redis to reach the socket anyway), and kept the change inside the `test` app plus 14 lines in `asgi.py`. If many people kept this page open at once, I would switch to the rejected approach.

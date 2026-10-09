@@ -110,3 +110,60 @@ execution ms, 5 runs: [0.193, 0.167, 0.164, 0.159, 0.184] median: 0.167
 SQL: SELECT "engine_label"."name" AS "label__name", COUNT("engine_labeledimage"."id") AS "count" FROM "engine_labeledimage" INNER JOIN "engine_job" ON ("engine_labeledimage"."job_id" = "engine_job"."id") INNER JOIN "engine_segment" ON ("engine_job"."segment_id" = "engine_segment"."id") INNER JOIN "engine_label" ON ("engine_labeledimage"."label_id" = "engine_label"."id") WHERE "engine_segment"."task_id" = 3 GROUP BY 1
 execution ms, 5 runs: [0.131, 0.152, 0.16, 0.145, 0.179] median: 0.152
 ```
+
+## Re-checks after later changes
+
+Steps 7 and 8 touched the endpoint, so I measured MO-1 again after each, the same way: one warm-up request, then 5 runs, with the machine load average under 0.5. This time I also saved every response and checked that it was the full answer (total 41,866, 80 labels).
+
+| When | Code | Median (ms) | Spread (ms) | Target |
+| :--- | :--- | :--- | :--- | :--- |
+| Step 6, the original measurement above | `dae72198b` | 72.5 | 71.0 to 73.0 | met |
+| After step 7 (grouping by label and type) | same code as `21726bebd` | 77.7 | 77.4 to 80.8 | met |
+| After step 8 (WebSocket), final code | `60d3deee9` | 78.5 | 77.5 to 78.7 | met |
+
+Grouping by shape type cost about 5 ms, which matches the shapes query going from 41.7 ms to 46.7 ms in `EXPLAIN ANALYZE`. Step 8 did not change the counting code; the extra 1 ms is within the normal difference between runs.
+
+My first try at the step 7 re-check was taken right after the containers restarted, with a load average of 3.6, and one run took 93.5 ms. I threw that set away and waited for the machine to settle, because my conditions say nothing else running.
+
+### Raw output, discarded set (machine still busy after a restart)
+
+Measured on 9 October 2026 at 03:03 UTC.
+
+```text
+ 03:03:52 up 1 day,  6:18,  3 users,  load average: 3.61, 3.00, 1.62
+warm-up: HTTP 200 0.085930s
+run 1: HTTP 200 0.076200s
+run 2: HTTP 200 0.076719s
+run 3: HTTP 200 0.093539s
+run 4: HTTP 200 0.077339s
+run 5: HTTP 200 0.076363s
+```
+
+### Raw output, after step 7
+
+Measured on 9 October 2026 at 03:06 UTC.
+
+```text
+ 03:06:04 up 1 day,  6:20,  3 users,  load average: 0.47, 1.96, 1.41
+warm-up: HTTP 200 0.080375s
+run 1: HTTP 200 0.080849s
+run 2: HTTP 200 0.077377s
+run 3: HTTP 200 0.077800s
+run 4: HTTP 200 0.077383s
+run 5: HTTP 200 0.077742s
+```
+
+### Raw output, final code
+
+```text
+$ date -u; git rev-parse --short HEAD; uptime
+Fri Oct  9 04:55:45 UTC 2026
+60d3deee9
+ 04:55:45 up 1 day,  8:10,  3 users,  load average: 0.40, 0.26, 0.25
+warm-up: HTTP 200 0.079201s
+run 1: HTTP 200 0.078368s
+run 2: HTTP 200 0.078545s
+run 3: HTTP 200 0.078645s
+run 4: HTTP 200 0.078687s
+run 5: HTTP 200 0.077500s
+```
