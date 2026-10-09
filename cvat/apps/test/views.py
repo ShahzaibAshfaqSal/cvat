@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 from django.db.models import Count
 from drf_spectacular.utils import extend_schema
@@ -15,11 +15,6 @@ from cvat.apps.engine.types import ExtendedRequest
 from .permissions import LabelAnalyticsPermission
 from .serializers import LabelAnalyticsFilterSerializer, LabelAnalyticsSerializer
 
-# Shapes, tracks and tags are stored in separate tables. Each row has a label
-# (Annotation.label -> engine.Label) and a job, which belongs to the task
-# through job -> segment -> task.
-ANNOTATION_MODELS = (LabeledShape, LabeledTrack, LabeledImage)
-
 
 class LabelAnalyticsViewSet(viewsets.ViewSet):
     iam_supports_organization_params = False
@@ -27,7 +22,7 @@ class LabelAnalyticsViewSet(viewsets.ViewSet):
     serializer_class = None
 
     @extend_schema(
-        summary="Count annotations per label in a task",
+        summary="Count annotations per label in a task, split by annotation type",
         parameters=[LabelAnalyticsFilterSerializer],
         responses={"200": LabelAnalyticsSerializer},
     )
@@ -36,23 +31,37 @@ class LabelAnalyticsViewSet(viewsets.ViewSet):
         params.is_valid(raise_exception=True)
         task_id = params.validated_data["task_id"]
 
-        counts = Counter()
-        for model in ANNOTATION_MODELS:
-            queryset = model.objects.filter(job__segment__task_id=task_id)
-            if hasattr(model, "parent"):
-                # skeleton points are stored as child rows; count the skeleton once
-                queryset = queryset.filter(parent__isnull=True)
+        # Shapes, tracks and tags are stored in separate tables. Each row has a label
+        # (Annotation.label -> engine.Label) and a job, which belongs to the task
+        # through job -> segment -> task. Skeleton points are stored as child rows,
+        # so only rows without a parent are counted.
+        shapes = LabeledShape.objects.filter(job__segment__task_id=task_id, parent__isnull=True)
+        tracks = LabeledTrack.objects.filter(job__segment__task_id=task_id, parent__isnull=True)
+        tags = LabeledImage.objects.filter(job__segment__task_id=task_id)
 
-            rows = queryset.values("label__name").annotate(count=Count("id")).order_by()
-            for row in rows:
-                counts[row["label__name"]] += row["count"]
+        counts = defaultdict(Counter)
+        # a shape has its own type (rectangle, polygon, mask...); group by label and type at once
+        for row in shapes.values("label__name", "type").annotate(count=Count("id")).order_by():
+            counts[row["label__name"]][row["type"]] += row["count"]
 
-        results = [
-            {"label": label, "count": count}
-            for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        ]
+        # a track or a tag has no single shape type, so each kind is one group of its own
+        for kind, queryset in (("track", tracks), ("tag", tags)):
+            for row in queryset.values("label__name").annotate(count=Count("id")).order_by():
+                counts[row["label__name"]][kind] += row["count"]
+
+        results = sorted(
+            (
+                {"label": label, "count": by_type.total(), "by_type": dict(by_type)}
+                for label, by_type in counts.items()
+            ),
+            key=lambda item: (-item["count"], item["label"]),
+        )
 
         serializer = LabelAnalyticsSerializer(
-            {"task_id": task_id, "total": counts.total(), "results": results}
+            {
+                "task_id": task_id,
+                "total": sum(item["count"] for item in results),
+                "results": results,
+            }
         )
         return Response(serializer.data)

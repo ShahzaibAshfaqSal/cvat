@@ -12,6 +12,10 @@ class LabelAnalyticsFilterSerializer(serializers.Serializer):
 class LabelAnnotationCountSerializer(serializers.Serializer):
     label = serializers.CharField()
     count = serializers.IntegerField()
+    by_type = serializers.DictField(
+        child=serializers.IntegerField(),
+        help_text="Counts split by shape type (rectangle, polygon, mask...), 'track' and 'tag'",
+    )
 
 
 class LabelAnalyticsSerializer(serializers.Serializer):

@@ -74,8 +74,16 @@ class LabelAnalyticsAPITestCase(APITestCase):
                 "task_id": self.task.id,
                 "total": 5,
                 "results": [
-                    {"label": "car", "count": 3},
-                    {"label": "person", "count": 2},
+                    {
+                        "label": "car",
+                        "count": 3,
+                        "by_type": {"rectangle": 1, "polygon": 1, "track": 1},
+                    },
+                    {
+                        "label": "person",
+                        "count": 2,
+                        "by_type": {"skeleton": 1, "tag": 1},
+                    },
                 ],
             },
         )

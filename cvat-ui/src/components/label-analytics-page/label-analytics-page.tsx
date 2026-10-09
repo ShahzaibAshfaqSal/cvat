@@ -11,6 +11,7 @@ import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Card from 'antd/lib/card';
 import Empty from 'antd/lib/empty';
+import Radio from 'antd/lib/radio';
 import Statistic from 'antd/lib/statistic';
 import Text from 'antd/lib/typography/Text';
 import Title from 'antd/lib/typography/Title';
@@ -56,6 +57,7 @@ function LabelAnalyticsPage(): JSX.Element {
     const [data, setData] = useState<PageData | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
+    const [groupByType, setGroupByType] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -124,7 +126,21 @@ function LabelAnalyticsPage(): JSX.Element {
                         <Statistic title='Most frequent class' value={analytics.results[0].label} />
                     </Col>
                 </Row>
-                <LabelCountsChart counts={analytics.results} labelColors={labelColors} />
+                <Radio.Group
+                    className='cvat-label-analytics-grouping'
+                    optionType='button'
+                    value={groupByType}
+                    onChange={(event) => setGroupByType(event.target.value)}
+                    options={[
+                        { label: 'Total', value: false },
+                        { label: 'By annotation type', value: true },
+                    ]}
+                />
+                <LabelCountsChart
+                    counts={analytics.results}
+                    labelColors={labelColors}
+                    groupByType={groupByType}
+                />
             </>
         );
     }
